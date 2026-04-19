@@ -1,0 +1,5 @@
+Flask==2.3.3
+vk-api
+requests
+python-dateutil
+pytz
