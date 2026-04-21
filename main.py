@@ -22,7 +22,8 @@ bot = VkBot(
     log_peer_id=config.get("log_peer_id")
 )
 
-CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE", "3be93db6")
+# Код подтверждения из переменных окружения или новый
+CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE", "be1f1be5")
 
 app = Flask(__name__)
 
@@ -31,12 +32,16 @@ def callback():
     data = request.json
     logger.info(f"Получен тип: {data.get('type')}")
     
+    # Подтверждение сервера
     if data.get("type") == "confirmation":
+        logger.info(f"Отправляем код подтверждения: {CONFIRMATION_CODE}")
         return CONFIRMATION_CODE
     
+    # Новое сообщение
     if data.get("type") == "message_new":
         message = data["object"]["message"]
         
+        # Создаём событие для бота
         class Event:
             pass
         
@@ -57,4 +62,5 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))
+    logger.info(f"Запуск на порту {port}")
     app.run(host="0.0.0.0", port=port)
