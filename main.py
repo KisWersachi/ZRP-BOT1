@@ -1,56 +1,55 @@
 import logging
 import os
-import sys
 from flask import Flask, request
+import vk_api
+from vk_api.utils import get_random_id
 
-sys.path.insert(0, os.path.dirname(__file__))
-
-from bot import VkBot
-from config import load_config
-from database import init_db
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-config = load_config()
-init_db()
-
-bot = VkBot(
-    group_id=config["group_id"],
-    token=config["token"],
-    command_cooldown=config["command_cooldown"],
-    log_peer_id=config.get("log_peer_id")
-)
-
-# Код подтверждения из переменных окружения или новый
-CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE", "be1f1be5")
-
 app = Flask(__name__)
+
+TOKEN = "vk1.a.JOGy731NXPv7SPYNcORJe_NDCWCJftwgoo_fDkLJKrWpaZHMY5PYwv-0djtwII7PUJxWJB1YTy6etSuAn3oD0S6hkiQVrGKlyUFpQQyjD-AZyaOtGvpU8xVhjbJrWIUUX_kkfcCpjlmZ-5BVsqW0KU7Rbn3KKD7V8gktb-t7_WThyynca8-qOW-e7kVxIJieRxdJheWV6vTBOdYY-XzaMA"
+CONFIRMATION_CODE = "be1f1be5"
+
+def send_message(peer_id, text):
+    try:
+        vk = vk_api.VkApi(token=TOKEN).get_api()
+        vk.messages.send(
+            peer_id=peer_id,
+            message=text,
+            random_id=get_random_id()
+        )
+        logger.info(f"Сообщение отправлено в {peer_id}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки: {e}")
 
 @app.route("/", methods=["POST"])
 def callback():
     data = request.json
     logger.info(f"Получен тип: {data.get('type')}")
     
-    # Подтверждение сервера
     if data.get("type") == "confirmation":
-        logger.info(f"Отправляем код подтверждения: {CONFIRMATION_CODE}")
         return CONFIRMATION_CODE
     
-    # Новое сообщение
     if data.get("type") == "message_new":
         message = data["object"]["message"]
+        peer_id = message["peer_id"]
+        text = message.get("text", "").strip()
+        user_id = message["from_id"]
         
-        # Создаём событие для бота
-        class Event:
-            pass
+        logger.info(f"Сообщение от {user_id}: '{text}'")
         
-        event = Event()
-        event.obj = Event()
-        event.obj.message = message
-        event.type = "message_new"
-        
-        bot.handle_message(event)
+        # Простая обработка команд
+        if text == "/help":
+            send_message(peer_id, "✅ Бот работает!\n\nКоманды:\n/help - помощь\n/balance - баланс\n/daily - бонус")
+            logger.info("Ответ на /help отправлен")
+        elif text == "/balance":
+            send_message(peer_id, "💰 Баланс: 0 монет")
+        elif text == "/daily":
+            send_message(peer_id, "🎁 Ежедневный бонус: +50 монет!")
+        else:
+            send_message(peer_id, f"❌ Неизвестная команда. Напишите /help")
         
         return "ok"
     
@@ -58,9 +57,8 @@ def callback():
 
 @app.route("/", methods=["GET"])
 def health():
-    return "VK Bot is running", 200
+    return "OK", 200
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 3000))
-    logger.info(f"Запуск на порту {port}")
     app.run(host="0.0.0.0", port=port)
