@@ -12,13 +12,31 @@ from utils import parse_command, parse_time, format_time_delta
 
 logger = logging.getLogger(__name__)
 
-# Иерархия ролей для проверки прав доступа
+# Иерархия ролей (10 уровней)
 ROLE_HIERARCHY = {
     "user": 1,
-    "moderator": 2,
-    "senior_moderator": 3,
-    "admin": 4,
-    "creator": 5
+    "assistant": 2,
+    "junior_moderator": 3,
+    "moderator": 4,
+    "senior_moderator": 5,
+    "admin": 6,
+    "senior_admin": 7,
+    "special_admin": 8,
+    "owner": 9,
+    "creator": 10
+}
+
+ROLE_NAMES = {
+    "creator": "👑 Создатель",
+    "owner": "⭐ Владелец",
+    "special_admin": "🔰 Специальный администратор",
+    "senior_admin": "📌 Главный администратор",
+    "admin": "⚙️ Администратор",
+    "senior_moderator": "🛡️ Старший модератор",
+    "moderator": "🔨 Модератор",
+    "junior_moderator": "📋 Младший модератор",
+    "assistant": "🤝 Помощник",
+    "user": "👤 Пользователь"
 }
 
 class VkBot:
@@ -26,8 +44,7 @@ class VkBot:
         self.group_id = group_id
         self.vk_session = vk_api.VkApi(token=token)
         self.vk = self.vk_session.get_api()
-        # Long Poll отключён, так как используем Callback API
-        # self.longpoll = VkBotLongPoll(self.vk_session, group_id)
+        self.longpoll = VkBotLongPoll(self.vk_session, group_id)
         self.command_cooldown = command_cooldown
         self.log_peer_id = log_peer_id
         
@@ -110,7 +127,6 @@ class VkBot:
     def send_log_message(self, action: str, admin_id: int, target_id: Optional[int] = None, 
                         peer_id: Optional[int] = None, details: Optional[str] = None) -> bool:
         if not self.log_peer_id:
-            logger.warning("Логирование выключено (нет ID беседы для логов)")
             return False
             
         try:
@@ -241,7 +257,29 @@ class VkBot:
             if not user:
                 return False
             user_role = user["role"]
+            
         return ROLE_HIERARCHY.get(user_role, 0) >= ROLE_HIERARCHY.get(required_role, 0)
+
+    def get_user_role(self, user_id: int, peer_id: Optional[int] = None) -> str:
+        if peer_id:
+            role = db.get_role(user_id, peer_id)
+            if role != 'user':
+                return role
+        
+        user = db.get_user(user_id)
+        if user:
+            return user.get('role', 'user')
+        return 'user'
+
+    def set_user_role(self, user_id: int, role: str, peer_id: Optional[int] = None, admin_id: Optional[int] = None, reason: str = ""):
+        db.set_role(user_id, role, peer_id)
+        
+        role_name = ROLE_NAMES.get(role, role)
+        
+        if admin_id:
+            self.send_log_message("set_role", admin_id, user_id, peer_id, f"Должность: {role_name}\nПричина: {reason}")
+        
+        return True
 
     def has_rights(self, peer_id: int, user_id: int, required_role: str) -> bool:
         is_owner = self.is_conversation_owner(peer_id, user_id)
@@ -334,10 +372,7 @@ class VkBot:
             self.handle_command(peer_id, user_id, text, message)
         else:
             if self.log_peer_id and peer_id > 2000000000:
-                log_text = text
-                if len(log_text) > 100:
-                    log_text = log_text[:97] + "..."
-                
+                log_text = text[:97] + "..." if len(text) > 100 else text
                 self.send_log_message(
                     action="message",
                     admin_id=user_id,
@@ -369,40 +404,26 @@ class VkBot:
             return
             
         if not self.check_cooldown(user_id):
-            self.send_message(peer_id, f"[id{user_id}|Пользователь], харош спамить!")
+            self.send_message(peer_id, f"[id{user_id}|Пользователь], не спешите!")
             return
             
         if not self.commands.has_command(command):
             return
         
-        cmd_requires_target = ["warn", "unwarn", "getwarn", "warnhistory", "kick", "ban", "unban", 
-                             "mute", "unmute", "getmute", "setnick", "removenick", "getnick", 
-                             "getacc", "chek", "getban", "reg", "addmoder", "addsenmoder", 
-                             "addadmin", "removerole", "removeadmin", "stats"]
+        cmd_requires_target = ["warn", "unwarn", "warns", "kick", "ban", "unban", 
+                               "mute", "unmute", "muted", "setrole", "removerole",
+                               "transfer", "give", "duel", "hug", "kiss", "hit"]
         
         if message and command in cmd_requires_target:
             if "reply_message" in message and (not args or (not args[0].isdigit() and not args.startswith("[") and not args.startswith("@"))):
                 target_id = self.get_user_id_from_reply(message)
                 if target_id:
-                    if command in ["unwarn", "getwarn", "warnhistory", "kick", "unban", "unmute", "getmute", "removenick", "getnick", "chek", "getban", "reg", "stats"]:
-                        args = str(target_id) + (" " + args if args else "")
-                    elif args and command in ["warn", "ban", "mute", "setnick", "addmoder", "addsenmoder", "addadmin", "removerole", "removeadmin"]:
+                    if command in ["unwarn", "warns", "kick", "unban", "unmute", "muted", "removerole"]:
+                        args = str(target_id)
+                    elif args:
                         args = str(target_id) + " " + args
                     else:
-                        if command in ["warn", "ban", "mute", "setnick", "addmoder", "addsenmoder", "addadmin", "removerole", "removeadmin"]:
-                            msg = "❗ Укажи "
-                            if command == "warn" or command == "ban":
-                                msg += "причину."
-                            elif command == "mute":
-                                msg += "длительность и причину."
-                            elif command == "setnick":
-                                msg += "никнейм."
-                            elif command in ["addmoder", "addsenmoder", "addadmin", "removerole", "removeadmin"]:
-                                msg += "причину назначения или снятия роли."
-                            self.send_message(peer_id, msg)
-                            return
-                        else:
-                            args = str(target_id)
+                        args = str(target_id)
             
         if args and command in cmd_requires_target:
             parts = args.split(" ", 1)
@@ -427,18 +448,16 @@ class VkBot:
                 if event.type == VkBotEventType.MESSAGE_NEW:
                     self.executor.submit(self.handle_message, event)
         except Exception as e:
-            logger.error(f"Блин, ошибка в событиях: {str(e)}")
+            logger.error(f"Ошибка в событиях: {str(e)}")
             time.sleep(5)
 
     def process_delete_queue(self):
         while True:
             try:
                 time.sleep(1)
-                
                 with self.delete_lock:
                     messages_to_delete = self.delete_queue.copy()
                     self.delete_queue = []
-                
                 for peer_id, message_id in messages_to_delete:
                     self.delete_message(peer_id, message_id)
             except Exception as e:
