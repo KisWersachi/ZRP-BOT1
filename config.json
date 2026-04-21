@@ -1,6 +1,5 @@
 {
-  "group_id": "YOUR_GROUP_ID",
-  "token": "YOUR_VK_API_TOKEN",
-  "command_cooldown": 3,
-  "log_peer_id": "ID_CHAT_FOR_LOGS"
+    "group_id": "237844392",
+    "token": "vk1.a.JOGy731NXPv7SPYNcORJe_NDCWCJftwgoo_fDkLJKrWpaZHMY5PYwv-0djtwII7PUJxWJB1YTy6etSuAn3oD0S6hkiQVrGKlyUFpQQyjD-AZyaOtGvpU8xVhjbJrWIUUX_kkfcCpjlmZ-5BVsqW0KU7Rbn3KKD7V8gktb-t7_WThyynca8-qOW-e7kVxIJieRxdJheWV6vTBOdYY-XzaMA",
+    "command_cooldown": 3
 }
