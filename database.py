@@ -1,651 +1,366 @@
 import sqlite3
 import logging
-import time
-import threading
-from typing import Dict, List, Tuple, Optional, Any, Union
+import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Database connection with thread lock for safety
-conn = sqlite3.connect("vk_bot.db", check_same_thread=False)
-db_lock = threading.RLock()  # Reentrant lock for database operations
-cursor = conn.cursor()
+DB_PATH = os.path.join(os.path.dirname(__file__), 'vk_bot.db')
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    # Initialize database tables if they don't exist.
-    with db_lock:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            nickname TEXT,
-            role TEXT DEFAULT 'user',  -- Оставляем для обратной совместимости
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            role TEXT DEFAULT 'user',
+            coins INTEGER DEFAULT 0,
+            tickets INTEGER DEFAULT 0,
+            gems INTEGER DEFAULT 0,
             messages_count INTEGER DEFAULT 0,
-            warns INTEGER DEFAULT 0,
+            warnings INTEGER DEFAULT 0,
             mute_until INTEGER DEFAULT 0,
-            ban_reason TEXT DEFAULT NULL,
-            reg_date INTEGER DEFAULT 0
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS warns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            reason TEXT,
-            timestamp INTEGER,
-            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bans (
-            user_id INTEGER PRIMARY KEY,
-            reason TEXT,
-            ban_timestamp INTEGER,
-            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        """)
-        # Создаем таблицу для хранения ролей в конкретных беседах
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS conversation_roles (
+            ban_reason TEXT,
+            daily_streak INTEGER DEFAULT 0,
+            last_daily INTEGER DEFAULT 0,
+            last_weekly INTEGER DEFAULT 0,
+            last_work INTEGER DEFAULT 0,
+            experience INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_roles (
             user_id INTEGER,
             peer_id INTEGER,
             role TEXT DEFAULT 'user',
-            PRIMARY KEY (user_id, peer_id),
-            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        """)
-        conn.commit()
-        logger.info("Database initialized successfully")
-
-def get_user(user_id: int) -> Optional[Dict[str, Any]]:
-    # Get user information from database.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Dictionary with user information or None if user doesn't exist
-    with db_lock:
-        cursor.execute("""
-            SELECT 
-            user_id, nickname, role, messages_count, warns, 
-            mute_until, ban_reason, reg_date 
-            FROM users 
-            WHERE user_id = ?
-        """, (user_id,))
-        row = cursor.fetchone()
-        
-    if row:
-        return {
-            "user_id": row[0],
-            "nickname": row[1],
-            "role": row[2],
-            "messages_count": row[3],
-            "warns": row[4],
-            "mute_until": row[5],
-            "ban_reason": row[6],
-            "reg_date": row[7]
-        }
-    return None
-
-def add_user(user_id: int) -> None:
-    # Add new user to database if not exists.
-    #
-    # Args:
-    # user_id: VK user ID
-    with db_lock:
-        cursor.execute(
-            "INSERT OR IGNORE INTO users (user_id, reg_date) VALUES (?, ?)",
-            (user_id, int(time.time()))
+            PRIMARY KEY (user_id, peer_id)
         )
-        conn.commit()
-
-def update_message_count(user_id: int) -> None:
-    # Increment user's message count.
-    #
-    # Args:
-    # user_id: VK user ID
-    with db_lock:
-        cursor.execute("""
-            INSERT INTO users (user_id, messages_count, reg_date) 
-            VALUES (?, 1, ?) 
-            ON CONFLICT(user_id) DO UPDATE SET 
-            messages_count = messages_count + 1
-        """, (user_id, int(time.time())))
-        conn.commit()
-
-def set_nickname(user_id: int, nickname: str) -> bool:
-    # Set nickname for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    # nickname: New nickname
-    #
-    # Returns:
-    # Success status
-    with db_lock:
-        cursor.execute("""
-            UPDATE users 
-            SET nickname = ? 
-            WHERE user_id = ?
-        """, (nickname, user_id))
-        success = cursor.rowcount > 0
-        conn.commit()
-        return success
-
-def remove_nickname(user_id: int) -> bool:
-    # Remove nickname from a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Success status
-    with db_lock:
-        cursor.execute("""
-            UPDATE users 
-            SET nickname = NULL 
-            WHERE user_id = ?
-        """, (user_id,))
-        success = cursor.rowcount > 0
-        conn.commit()
-        return success
-
-def find_user_by_nickname(nickname: str) -> List[Dict[str, Any]]:
-    # Find users by nickname.
-    #
-    # Args:
-    # nickname: Nickname to search for
-    #
-    # Returns:
-    # List of matching users
-    with db_lock:
-        cursor.execute("""
-            SELECT user_id, nickname, role 
-            FROM users 
-            WHERE nickname LIKE ?
-        """, (f"%{nickname}%",))
-        rows = cursor.fetchall()
+    ''')
     
-    return [
-        {"user_id": row[0], "nickname": row[1], "role": row[2]} 
-        for row in rows
-    ]
-
-def get_users_with_nicknames() -> List[Dict[str, Any]]:
-    # Get all users with nicknames.
-    #
-    # Returns:
-    # List of users with nicknames
-    with db_lock:
-        cursor.execute("""
-            SELECT user_id, nickname, role 
-            FROM users 
-            WHERE nickname IS NOT NULL
-        """)
-        rows = cursor.fetchall()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            peer_id INTEGER,
+            reason TEXT,
+            admin_id INTEGER,
+            timestamp INTEGER,
+            is_active INTEGER DEFAULT 1
+        )
+    ''')
     
-    return [
-        {"user_id": row[0], "nickname": row[1], "role": row[2]} 
-        for row in rows
-    ]
-
-def get_users_without_nicknames() -> List[Dict[str, Any]]:
-    # Get all users without nicknames.
-    #
-    # Returns:
-    # List of users without nicknames
-    with db_lock:
-        cursor.execute("""
-            SELECT user_id, role 
-            FROM users 
-            WHERE nickname IS NULL
-        """)
-        rows = cursor.fetchall()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bans (
+            user_id INTEGER,
+            peer_id INTEGER,
+            reason TEXT,
+            admin_id INTEGER,
+            timestamp INTEGER,
+            PRIMARY KEY (user_id, peer_id)
+        )
+    ''')
     
-    return [
-        {"user_id": row[0], "role": row[1]} 
-        for row in rows
-    ]
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS inventory (
+            user_id INTEGER,
+            item TEXT,
+            quantity INTEGER DEFAULT 1,
+            PRIMARY KEY (user_id, item)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS custom_commands (
+            name TEXT,
+            response TEXT,
+            user_id INTEGER,
+            is_global INTEGER DEFAULT 0,
+            PRIMARY KEY (name, user_id)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            peer_id INTEGER PRIMARY KEY,
+            welcome_message TEXT,
+            rules TEXT,
+            slow_mode INTEGER DEFAULT 0,
+            quiet_mode INTEGER DEFAULT 0,
+            ban_links INTEGER DEFAULT 0,
+            ban_swear INTEGER DEFAULT 0,
+            ban_caps INTEGER DEFAULT 0,
+            logs_enabled INTEGER DEFAULT 0
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ignored_users (
+            user_id INTEGER,
+            peer_id INTEGER,
+            admin_id INTEGER,
+            timestamp INTEGER,
+            PRIMARY KEY (user_id, peer_id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    logger.info("Database initialized successfully")
 
-def add_warn(user_id: int, reason: str) -> int:
-    # Add warning to a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    # reason: Warning reason
-    #
-    # Returns:
-    # New warn count
-    timestamp = int(time.time())
-    with db_lock:
-        # Add warn record
-        cursor.execute("""
-            INSERT INTO warns (user_id, reason, timestamp) 
+def add_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR IGNORE INTO users (id) VALUES (?)', (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_user(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+    user = cursor.fetchone()
+    conn.close()
+    return dict(user) if user else None
+
+def update_user(user_id, **kwargs):
+    conn = get_db()
+    cursor = conn.cursor()
+    for key, value in kwargs.items():
+        cursor.execute(f'UPDATE users SET {key} = ? WHERE id = ?', (value, user_id))
+    conn.commit()
+    conn.close()
+
+def get_role(user_id, peer_id=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if peer_id:
+        cursor.execute('SELECT role FROM user_roles WHERE user_id = ? AND peer_id = ?', (user_id, peer_id))
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            return row['role']
+    
+    cursor.execute('SELECT role FROM users WHERE id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row['role'] if row else 'user'
+
+def set_role(user_id, role, peer_id=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if peer_id:
+        cursor.execute('''
+            INSERT OR REPLACE INTO user_roles (user_id, peer_id, role)
             VALUES (?, ?, ?)
-        """, (user_id, reason, timestamp))
-        
-        # Update warn count
-        cursor.execute("""
-            UPDATE users 
-            SET warns = warns + 1 
-            WHERE user_id = ?
-        """, (user_id,))
-        
-        # Get new warn count
-        cursor.execute(
-            "SELECT warns FROM users WHERE user_id = ?",
-            (user_id,)
-        )
-        warn_count = cursor.fetchone()[0]
-        
-        conn.commit()
-        return warn_count
-
-def remove_warn(user_id: int) -> int:
-    # Remove a warning from a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # New warn count
-    with db_lock:
-        # Get the most recent warning
-        cursor.execute("""
-            SELECT id FROM warns 
-            WHERE user_id = ? 
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """, (user_id,))
-        row = cursor.fetchone()
-        
-        if not row:
-            return 0
-        
-        warn_id = row[0]
-        
-        # Delete the warning
-        cursor.execute(
-            "DELETE FROM warns WHERE id = ?",
-            (warn_id,)
-        )
-        
-        # Update warn count
-        cursor.execute("""
-            UPDATE users 
-            SET warns = MAX(0, warns - 1) 
-            WHERE user_id = ?
-        """, (user_id,))
-        
-        # Get new warn count
-        cursor.execute(
-            "SELECT warns FROM users WHERE user_id = ?",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        warn_count = row[0] if row else 0
-        
-        conn.commit()
-        return warn_count
-
-def get_warns(user_id: int) -> int:
-    # Get warning count for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Warning count
-    with db_lock:
-        cursor.execute(
-            "SELECT warns FROM users WHERE user_id = ?",
-            (user_id,)
-        )
-        row = cursor.fetchone()
+        ''', (user_id, peer_id, role))
+    else:
+        cursor.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
     
-    return row[0] if row else 0
+    conn.commit()
+    conn.close()
 
-def get_warn_history(user_id: int) -> List[Dict[str, Any]]:
-    # Get warning history for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # List of warnings
-    with db_lock:
-        cursor.execute("""
-            SELECT id, reason, timestamp 
-            FROM warns 
-            WHERE user_id = ? 
-            ORDER BY timestamp DESC
-        """, (user_id,))
-        rows = cursor.fetchall()
+def update_message_count(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET messages_count = messages_count + 1 WHERE id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def add_warning(user_id, peer_id, reason, admin_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    timestamp = int(datetime.now().timestamp())
+    cursor.execute('''
+        INSERT INTO warnings (user_id, peer_id, reason, admin_id, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, peer_id, reason, admin_id, timestamp))
+    cursor.execute('UPDATE users SET warnings = warnings + 1 WHERE id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_warnings(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM warnings WHERE user_id = ? AND is_active = 1', (user_id,))
+    warnings = cursor.fetchall()
+    conn.close()
+    return [dict(w) for w in warnings]
+
+def remove_warning(warning_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE warnings SET is_active = 0 WHERE id = ?', (warning_id,))
+    cursor.execute('UPDATE users SET warnings = warnings - 1 WHERE id = (SELECT user_id FROM warnings WHERE id = ?)', (warning_id,))
+    conn.commit()
+    conn.close()
+
+def set_mute(user_id, duration):
+    mute_until = int(datetime.now().timestamp()) + duration
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET mute_until = ? WHERE id = ?', (mute_until, user_id))
+    conn.commit()
+    conn.close()
+
+def get_mute(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT mute_until FROM users WHERE id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row['mute_until'] if row else 0
+
+def set_ban(user_id, peer_id, reason, admin_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    timestamp = int(datetime.now().timestamp())
+    cursor.execute('''
+        INSERT OR REPLACE INTO bans (user_id, peer_id, reason, admin_id, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, peer_id, reason, admin_id, timestamp))
+    cursor.execute('UPDATE users SET ban_reason = ? WHERE id = ?', (reason, user_id))
+    conn.commit()
+    conn.close()
+
+def get_ban(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM bans WHERE user_id = ?', (user_id,))
+    ban = cursor.fetchone()
+    conn.close()
+    return dict(ban) if ban else None
+
+def remove_ban(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM bans WHERE user_id = ?', (user_id,))
+    cursor.execute('UPDATE users SET ban_reason = NULL WHERE id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def add_coins(user_id, amount):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET coins = coins + ? WHERE id = ?', (amount, user_id))
+    conn.commit()
+    conn.close()
+
+def remove_coins(user_id, amount):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET coins = coins - ? WHERE id = ?', (amount, user_id))
+    conn.commit()
+    conn.close()
+
+def get_coins(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT coins FROM users WHERE id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row['coins'] if row else 0
+
+def add_item(user_id, item, quantity=1):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO inventory (user_id, item, quantity)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, item) DO UPDATE SET quantity = quantity + ?
+    ''', (user_id, item, quantity, quantity))
+    conn.commit()
+    conn.close()
+
+def get_inventory(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT item, quantity FROM inventory WHERE user_id = ?', (user_id,))
+    items = cursor.fetchall()
+    conn.close()
+    return [dict(item) for item in items]
+
+def add_custom_command(name, response, user_id, is_global=False):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO custom_commands (name, response, user_id, is_global)
+        VALUES (?, ?, ?, ?)
+    ''', (name.lower(), response, user_id, 1 if is_global else 0))
+    conn.commit()
+    conn.close()
+
+def remove_custom_command(name, user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM custom_commands WHERE name = ? AND user_id = ?', (name.lower(), user_id))
+    conn.commit()
+    conn.close()
+
+def get_user_commands(user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT name, response FROM custom_commands WHERE user_id = ?', (user_id,))
+    commands = cursor.fetchall()
+    conn.close()
+    return [dict(cmd) for cmd in commands]
+
+def get_chat_settings(peer_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM chat_settings WHERE peer_id = ?', (peer_id,))
+    settings = cursor.fetchone()
+    conn.close()
+    return dict(settings) if settings else {}
+
+def set_chat_settings(peer_id, **kwargs):
+    conn = get_db()
+    cursor = conn.cursor()
     
-    return [
-        {"id": row[0], "reason": row[1], "timestamp": row[2]} 
-        for row in rows
-    ]
-
-def get_all_warns() -> List[Dict[str, Any]]:
-    # Get all warnings.
-    #
-    # Returns:
-    # List of all warnings
-    with db_lock:
-        cursor.execute("""
-            SELECT w.id, w.user_id, u.nickname, w.reason, w.timestamp 
-            FROM warns w
-            JOIN users u ON w.user_id = u.user_id
-            ORDER BY w.timestamp DESC
-        """)
-        rows = cursor.fetchall()
+    current = get_chat_settings(peer_id)
+    if current:
+        for key, value in kwargs.items():
+            cursor.execute(f'UPDATE chat_settings SET {key} = ? WHERE peer_id = ?', (value, peer_id))
+    else:
+        keys = ['peer_id'] + list(kwargs.keys())
+        values = [peer_id] + list(kwargs.values())
+        placeholders = ','.join(['?'] * len(keys))
+        cursor.execute(f'INSERT INTO chat_settings ({",".join(keys)}) VALUES ({placeholders})', values)
     
-    return [
-        {
-            "id": row[0], 
-            "user_id": row[1], 
-            "nickname": row[2], 
-            "reason": row[3], 
-            "timestamp": row[4]
-        } 
-        for row in rows
-    ]
+    conn.commit()
+    conn.close()
 
-def set_mute(user_id: int, duration: int, reason: str) -> int:
-    # Mute a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    # duration: Mute duration in seconds
-    # reason: Mute reason
-    #
-    # Returns:
-    # Mute end timestamp
-    mute_until = int(time.time()) + duration
-    with db_lock:
-        cursor.execute("""
-            UPDATE users 
-            SET mute_until = ? 
-            WHERE user_id = ?
-        """, (mute_until, user_id))
-        conn.commit()
-        return mute_until
+def add_ignored(user_id, peer_id, admin_id=None):
+    conn = get_db()
+    cursor = conn.cursor()
+    timestamp = int(datetime.now().timestamp())
+    cursor.execute('''
+        INSERT OR REPLACE INTO ignored_users (user_id, peer_id, admin_id, timestamp)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, peer_id, admin_id, timestamp))
+    conn.commit()
+    conn.close()
 
-def remove_mute(user_id: int) -> bool:
-    # Remove mute from a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Success status
-    with db_lock:
-        cursor.execute("""
-            UPDATE users 
-            SET mute_until = 0 
-            WHERE user_id = ?
-        """, (user_id,))
-        success = cursor.rowcount > 0
-        conn.commit()
-        return success
+def remove_ignored(user_id, peer_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM ignored_users WHERE user_id = ? AND peer_id = ?', (user_id, peer_id))
+    conn.commit()
+    conn.close()
 
-def get_mute(user_id: int) -> int:
-    # Get remaining mute time for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Mute end timestamp
-    with db_lock:
-        cursor.execute(
-            "SELECT mute_until FROM users WHERE user_id = ?",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-    
-    return row[0] if row else 0
-
-def get_muted_users() -> List[Dict[str, Any]]:
-    # Get all muted users.
-    #
-    # Returns:
-    # List of muted users
-    current_time = int(time.time())
-    with db_lock:
-        cursor.execute("""
-            SELECT user_id, nickname, mute_until 
-            FROM users 
-            WHERE mute_until > ?
-            ORDER BY mute_until DESC
-        """, (current_time,))
-        rows = cursor.fetchall()
-    
-    return [
-        {
-            "user_id": row[0], 
-            "nickname": row[1], 
-            "mute_until": row[2]
-        } 
-        for row in rows
-    ]
-
-def ban_user(user_id: int, reason: str) -> bool:
-    # Ban a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    # reason: Ban reason
-    #
-    # Returns:
-    # Success status
-    ban_timestamp = int(time.time())
-    with db_lock:
-        cursor.execute("""
-            INSERT OR REPLACE INTO bans (user_id, reason, ban_timestamp) 
-            VALUES (?, ?, ?)
-        """, (user_id, reason, ban_timestamp))
-        conn.commit()
-        return True
-
-def unban_user(user_id: int) -> bool:
-    # Unban a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Success status
-    with db_lock:
-        cursor.execute(
-            "DELETE FROM bans WHERE user_id = ?",
-            (user_id,)
-        )
-        success = cursor.rowcount > 0
-        conn.commit()
-        return success
-
-def get_ban(user_id: int) -> Optional[Dict[str, Any]]:
-    # Get ban information for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    #
-    # Returns:
-    # Ban information or None if user is not banned
-    with db_lock:
-        cursor.execute("""
-            SELECT reason, ban_timestamp 
-            FROM bans 
-            WHERE user_id = ?
-        """, (user_id,))
-        row = cursor.fetchone()
-    
-    if row:
-        return {
-            "reason": row[0],
-            "ban_timestamp": row[1]
-        }
-    return None
-
-def get_banned_users() -> List[Dict[str, Any]]:
-    # Get all banned users.
-    #
-    # Returns:
-    # List of banned users
-    with db_lock:
-        cursor.execute("""
-            SELECT b.user_id, u.nickname, b.reason, b.ban_timestamp 
-            FROM bans b
-            LEFT JOIN users u ON b.user_id = u.user_id
-            ORDER BY b.ban_timestamp DESC
-        """)
-        rows = cursor.fetchall()
-    
-    return [
-        {
-            "user_id": row[0], 
-            "nickname": row[1], 
-            "reason": row[2], 
-            "ban_timestamp": row[3]
-        } 
-        for row in rows
-    ]
-
-def set_role(user_id: int, role: str, peer_id: Optional[int] = None) -> bool:
-    # Set role for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    # role: Role name
-    # peer_id: Optional conversation ID
-    #
-    # Returns:
-    # Success status
-    with db_lock:
-        if peer_id:
-            # Set role for specific conversation
-            cursor.execute("""
-                INSERT INTO conversation_roles (user_id, peer_id, role) 
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id, peer_id) DO UPDATE SET role = ?
-            """, (user_id, peer_id, role, role))
-        else:
-            # Set global role
-            cursor.execute("""
-                UPDATE users
-                SET role = ?
-                WHERE user_id = ?
-            """, (role, user_id))
-            
-        success = cursor.rowcount > 0
-        conn.commit()
-        return success
-
-def get_role(user_id: int, peer_id: Optional[int] = None) -> str:
-    # Get role for a user.
-    #
-    # Args:
-    # user_id: VK user ID
-    # peer_id: Optional conversation ID
-    #
-    # Returns:
-    # User role
-    with db_lock:
-        # If peer_id is specified, try to get conversation-specific role
-        if peer_id:
-            cursor.execute("""
-                SELECT role FROM conversation_roles 
-                WHERE user_id = ? AND peer_id = ?
-            """, (user_id, peer_id))
-            row = cursor.fetchone()
-            
-            # If found, return it
-            if row:
-                return row[0]
-        
-        # Otherwise, get global role
-        cursor.execute("""
-            SELECT role FROM users 
-            WHERE user_id = ?
-        """, (user_id,))
-        row = cursor.fetchone()
-        
-    return row[0] if row else "user"
-
-def get_staff(peer_id: Optional[int] = None) -> List[Dict[str, Any]]:
-    # Get staff members.
-    #
-    # Args:
-    # peer_id: Optional conversation ID to filter roles by conversation
-    #
-    # Returns:
-    # List of staff members
-    with db_lock:
-        if peer_id:
-            # Get roles specific to the conversation
-            cursor.execute("""
-                SELECT cr.user_id, u.nickname, cr.role
-                FROM conversation_roles cr
-                LEFT JOIN users u ON cr.user_id = u.user_id
-                WHERE cr.peer_id = ? AND cr.role != 'user'
-                ORDER BY 
-                CASE cr.role 
-                    WHEN 'creator' THEN 5
-                    WHEN 'admin' THEN 4
-                    WHEN 'senior_moderator' THEN 3
-                    WHEN 'moderator' THEN 2
-                    ELSE 1
-                END DESC
-            """, (peer_id,))
-        else:
-            # Get all global roles
-            cursor.execute("""
-                SELECT user_id, nickname, role
-                FROM users
-                WHERE role != 'user'
-                ORDER BY 
-                CASE role 
-                    WHEN 'creator' THEN 5
-                    WHEN 'admin' THEN 4
-                    WHEN 'senior_moderator' THEN 3
-                    WHEN 'moderator' THEN 2
-                    ELSE 1
-                END DESC
-            """)
-            
-        rows = cursor.fetchall()
-    
-    return [
-        {"user_id": row[0], "nickname": row[1], "role": row[2]} 
-        for row in rows
-    ]
-
-def get_inactive_users(threshold_days: int = 30) -> List[Dict[str, Any]]:
-    # Get inactive users.
-    #
-    # Args:
-    # threshold_days: Number of days without activity to consider a user inactive
-    #
-    # Returns:
-    # List of inactive users
-    threshold_timestamp = int(time.time()) - (threshold_days * 86400)
-    with db_lock:
-        cursor.execute("""
-            SELECT user_id, nickname, messages_count, role
-            FROM users
-            WHERE reg_date < ? AND messages_count < 5
-            ORDER BY reg_date ASC
-        """, (threshold_timestamp,))
-        rows = cursor.fetchall()
-    
-    return [
-        {
-            "user_id": row[0], 
-            "nickname": row[1], 
-            "messages_count": row[2],
-            "role": row[3]
-        } 
-        for row in rows
-    ]
+def is_ignored(user_id, peer_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM ignored_users WHERE user_id = ? AND peer_id = ?', (user_id, peer_id))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
